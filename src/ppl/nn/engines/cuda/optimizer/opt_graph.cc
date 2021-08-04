@@ -131,7 +131,7 @@ RetCode OptGraph::UpdateDims() {
                 }
                 if (ir_shape->second.dims.size() == dims_pairs->second.size()) {
                     for (uint32_t k = 0; k < ir_shape->second.dims.size(); ++k) {
-                        if ((dims_pairs->second)[k] != 0) {
+                        if (ir_shape->second.dims[k] == 1 && (dims_pairs->second)[k] != 0) {
                             ir_shape->second.dims[k] = (dims_pairs->second)[k];
                         }
                     }
@@ -331,12 +331,7 @@ RetCode OptGraph::UpdateType() {
         IOinfo.SetNode(node);
         CudaOptKernel* kernel = (CudaOptKernel*)(info_->kernels.find(node->GetId())->second.get());
 
-        datatype_t kernel_type = args_->kernel_default_type;
-        auto conf_pair = args_->node_types.find(node->GetName());
-        if (conf_pair != args_->node_types.end()) {
-            kernel_type = conf_pair->second;
-        }
-        auto status = kernel->InferType(&IOinfo, kernel_type);
+        auto status = kernel->InferType(&IOinfo, DATATYPE_UNKNOWN);
         if (status != RC_SUCCESS) {
             LOG(ERROR) << "Set type for node[" << node->GetName() << "] failed: " << GetRetCodeStr(status);
             return status;

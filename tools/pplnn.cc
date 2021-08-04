@@ -79,32 +79,28 @@ string ToString(T v) {
 
 Define_string_opt("--output-format", g_flag_output_format, "", "declare the output format");
 Define_string_opt("--output-type", g_flag_output_type, "", "declare the output type");
-Define_string_opt("--dims", g_flag_compiler_dims, "0", "declare init input dims for algo selection (split with comma)");
-Define_uint32_opt("--running-type", g_flag_kernel_default_types, 0,
-                  "declare the default type for running kernel, all the kernel will be excuted with this type");
-Define_bool_opt("--quick-select", g_flag_quick_select, 0, "quick select algorithms for conv and gemm kernel");
-Define_string_opt("--node-types", g_flag_node_datatype, "",
-                  "declare several node names and their types splited by comma for special kernels");
-Define_uint32_opt("--runningtimes", g_flag_running_times, 1, "declare running times");
+Define_string_opt("--dims", g_flag_compiler_dims, "",
+                  "declare init input dims for algo selection (split with comma)."
+                  " for example: 1_3_224_224,1_3_128_640");
+Define_bool_opt("--quick-select", g_flag_quick_select, false, "quick select algorithms for conv and gemm kernel");
 Define_uint32_opt("--device-id", g_flag_device_id, 0, "declare device id for cuda");
-Define_string_opt("--quantization", g_flag_quantization, "", "declare json file saved quantization information");
 
 #include "ppl/nn/engines/cuda/engine_factory.h"
 #include "ppl/nn/engines/cuda/cuda_options.h"
 
-static bool FillRuntimeOptions(RuntimeOptions* options);
-
 static inline bool RegisterEngines(vector<unique_ptr<Engine>>* engines) {
     CudaEngineOptions options;
     options.device_id = g_flag_device_id;
+
     auto engine = CudaEngineFactory::Create(options);
     engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_OUTPUT_FORMAT, g_flag_output_format.c_str());
     engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_OUTPUT_TYPE, g_flag_output_type.c_str());
-    engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_COMPILER_INPUT_SHAPE, g_flag_compiler_dims.c_str());
-    engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_KERNEL_DEFAULT_TYPE, g_flag_kernel_default_types);
-    engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_DEFAULT_ALGORITHMS, g_flag_quick_select);
-    engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_NODE_DATA_TYPE, g_flag_node_datatype.c_str());
-    engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_QUANTIZATION, g_flag_quantization.c_str());
+    engine->Configure(ppl::nn::cuda::CUDA_CONF_USE_DEFAULT_ALGORITHMS, g_flag_quick_select);
+
+    if (!g_flag_compiler_dims.empty()) {
+        engine->Configure(ppl::nn::cuda::CUDA_CONF_SET_COMPILER_INPUT_SHAPE, g_flag_compiler_dims.c_str());
+    }
+
     engines->emplace_back(unique_ptr<Engine>(engine));
     LOG(INFO) << "***** register CudaEngine *****";
     return true;
@@ -215,12 +211,12 @@ static bool SetRandomInputs(const vector<vector<int64_t>>& input_shapes, Runtime
         }
 
         auto nr_element = shape.GetBytesIncludingPadding() / sizeof(float);
-        unique_ptr<float[]> buffer(new float[nr_element]);
+        vector<float> buffer(nr_element);
 
         std::default_random_engine eng;
         std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
         for (uint32_t i = 0; i < nr_element; ++i) {
-            buffer.get()[i] = dis(eng);
+            buffer[i] = dis(eng);
         }
 
         auto status = t->ReallocBuffer();
@@ -231,7 +227,7 @@ static bool SetRandomInputs(const vector<vector<int64_t>>& input_shapes, Runtime
 
         TensorShape src_desc = t->GetShape();
         src_desc.SetDataFormat(DATAFORMAT_NDARRAY);
-        status = t->ConvertFromHost(buffer.get(), src_desc);
+        status = t->ConvertFromHost(buffer.data(), src_desc);
         if (status != RC_SUCCESS) {
             LOG(ERROR) << "set tensor[" << t->GetName() << "] content failed: " << GetRetCodeStr(status);
             return false;
@@ -457,11 +453,11 @@ static bool SaveInputsOneByOne(const Runtime* runtime) {
         auto& shape = t->GetShape();
 
         auto bytes = shape.GetBytesIncludingPadding();
-        unique_ptr<char[]> buffer(new char[bytes]);
+        vector<char> buffer(bytes);
 
         TensorShape src_desc = t->GetShape();
         src_desc.SetDataFormat(DATAFORMAT_NDARRAY);
-        auto status = t->ConvertToHost(buffer.get(), src_desc);
+        auto status = t->ConvertToHost(buffer.data(), src_desc);
         if (status != RC_SUCCESS) {
             LOG(ERROR) << "convert data failed: " << GetRetCodeStr(status);
             return false;
@@ -483,7 +479,7 @@ static bool SaveInputsOneByOne(const Runtime* runtime) {
             return false;
         }
 
-        ofs.write(buffer.get(), bytes);
+        ofs.write(buffer.data(), bytes);
     }
 
     return true;
@@ -500,17 +496,17 @@ static bool SaveInputsAllInOne(const Runtime* runtime) {
     for (uint32_t c = 0; c < runtime->GetInputCount(); ++c) {
         auto t = runtime->GetInputTensor(c);
         auto bytes = t->GetShape().GetBytesIncludingPadding();
-        unique_ptr<char[]> buffer(new char[bytes]);
+        vector<char> buffer(bytes);
 
         TensorShape src_desc = t->GetShape();
         src_desc.SetDataFormat(DATAFORMAT_NDARRAY);
-        auto status = t->ConvertToHost((void*)buffer.get(), src_desc);
+        auto status = t->ConvertToHost((void*)buffer.data(), src_desc);
         if (status != RC_SUCCESS) {
             LOG(ERROR) << "convert data failed: " << GetRetCodeStr(status);
             return false;
         }
 
-        ofs.write(buffer.get(), bytes);
+        ofs.write(buffer.data(), bytes);
     }
 
     return true;
@@ -523,9 +519,9 @@ static bool SaveOutputsOneByOne(const Runtime* runtime) {
         TensorShape dst_desc = t->GetShape();
         dst_desc.SetDataFormat(DATAFORMAT_NDARRAY);
         auto bytes = dst_desc.GetBytesIncludingPadding();
-        unique_ptr<char[]> buffer(new char[bytes]);
+        vector<char> buffer(bytes);
 
-        auto status = t->ConvertToHost(buffer.get(), dst_desc);
+        auto status = t->ConvertToHost(buffer.data(), dst_desc);
         if (status != RC_SUCCESS) {
             LOG(ERROR) << "convert data of tensor[" << t->GetName() << "] failed: " << GetRetCodeStr(status);
             return false;
@@ -538,7 +534,7 @@ static bool SaveOutputsOneByOne(const Runtime* runtime) {
             return false;
         }
 
-        ofs.write(buffer.get(), bytes);
+        ofs.write(buffer.data(), bytes);
     }
 
     return true;
@@ -795,15 +791,6 @@ int main(int argc, char* argv[]) {
     }
 
     auto run_begin_ts = std::chrono::system_clock::now();
-#ifdef PPLNN_USE_CUDA
-    for (uint32_t i = 0; i < g_flag_warmup_times; ++i) {
-        runtime->Run();
-    }
-    run_begin_ts = std::chrono::system_clock::now();
-    for (uint32_t i = 0; i < g_flag_running_times - 1; ++i) {
-        runtime->Run();
-    }
-#endif
     auto status = runtime->Run();
     if (status == RC_SUCCESS) {
         status = runtime->Sync();
